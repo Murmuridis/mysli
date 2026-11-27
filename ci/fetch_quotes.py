@@ -183,6 +183,11 @@ def replace_templates(s):
             parts = [p.strip() for p in body.split("|")]
             name = parts[0].strip().lower()
             args = [p for p in parts[1:] if "=" not in p]
+            # {{Библия|Мф|7:21|т=Мф., гл. 7, ст. 21}} — показываемый текст в «т=»
+            named = dict(p.split("=", 1) for p in parts[1:] if "=" in p)
+            shown = (named.get("т") or named.get("текст") or "").strip()
+            if shown:
+                return shown
             if name in ("***", "* * *", "звёздочки", "звездочки", "---", "—"):
                 return f"\n\n{SEP_MARK}\n\n"
             if name in ("right", "справа", "rs", "подпись", "r") and args:
@@ -320,6 +325,16 @@ def parse(text, mode, stop=None):
     return entries
 
 
+def polish(t):
+    """Убрать следы примечаний: номера сносок «(5)», «» 14.», пометки
+    редактора в квадратных скобках с латиницей или «см. прим.»."""
+    t = re.sub(r"\s*\(\d{1,3}\)", "", t)
+    t = re.sub(r"(?<=[»\"])\s*\d{1,3}(?=[\s.,;:!?]|$)", "", t)
+    t = re.sub(r"\s*\[[^\]]*(?:[A-Za-z]|прим\.|См\.)[^\]]*\]", "", t)
+    t = re.sub(r"\s+([,.;:!?])", r"\1", t)
+    return t.strip()
+
+
 def good(t, maxlen, minlen=12):
     if not (minlen <= len(t) <= maxlen):
         return False
@@ -330,6 +345,10 @@ def good(t, maxlen, minlen=12):
     if not re.search(r"[.!?…»\"]$", t):  # мысль должна быть законченной
         return False
     if re.match(r"^[a-zа-яё]", t):  # начало оборвано (продолжение предыдущего)
+        return False
+    if re.search(r"[A-Za-z]{2,}|[A-Za-z]'", t):  # остатки иностранных пометок
+        return False
+    if re.match(r"^(Первое издание|Источник|Перевод|Печатается)", t):
         return False
     return True
 
@@ -355,6 +374,7 @@ def collect():
         for t in titles:
             print(f"· {t}", file=sys.stderr)
             for text, author in parse(wikitext(t), src["mode"], src.get("stop")):
+                text = polish(text)
                 if not good(text, src["maxlen"]):
                     dropped += 1
                     continue
