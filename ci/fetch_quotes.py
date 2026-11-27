@@ -348,6 +348,8 @@ def good(t, maxlen, minlen=12):
         return False
     if re.search(r"[A-Za-z]{2,}|[A-Za-z]'", t):  # остатки иностранных пометок
         return False
+    if re.match(r"^\d+\s", t):  # обрывок с номером страницы или сноски
+        return False
     if re.match(r"^(Первое издание|Источник|Перевод|Печатается)", t):
         return False
     return True
