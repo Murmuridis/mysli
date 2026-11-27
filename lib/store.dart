@@ -4,6 +4,8 @@ import 'package:flutter/services.dart' show rootBundle;
 import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
 
+import 'topics.dart';
+
 
 /// Источник высказываний: книга, сайт или своя подборка.
 class Source {
@@ -69,12 +71,29 @@ class Quote {
         builtin: (r['builtin'] as int? ?? 0) == 1,
       );
 
+  bool get russian => isRussian(text);
+
   /// Текст для «Поделиться» и «Копировать».
   String get shareText {
     final b = StringBuffer('«$text»');
     if (author.isNotEmpty) b.write('\n— $author');
     return b.toString();
   }
+}
+
+/// Запись в дневнике: размышление над цитатой.
+class Note {
+  final int id;
+  final int quoteId;
+  final String text;
+  final DateTime created;
+  final Quote? quote;
+  const Note(
+      {required this.id,
+      required this.quoteId,
+      required this.text,
+      required this.created,
+      this.quote});
 }
 
 /// Всё хранение приложения: SQLite-база с источниками, цитатами и настройками.
@@ -91,15 +110,19 @@ class Store extends ChangeNotifier {
 
   /// Версия встроенной подборки. Если в новой версии приложения в
   /// assets/data/quotes.json добавятся цитаты — увеличить здесь и там.
-  static const _seedVersion = 1;
+  static const _seedVersion = 2;
 
   Future<void> open() async {
     _settings.clear();
     dbPath = p.join(await getDatabasesPath(), 'mysli.db');
     _db = await openDatabase(
       dbPath,
-      version: 1,
+      version: 2,
+      onUpgrade: (db, from, to) async {
+        if (from < 2) await _createNotes(db);
+      },
       onCreate: (db, v) async {
+        await _createNotes(db);
         await db.execute('''
           CREATE TABLE sources(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -131,6 +154,16 @@ class Store extends ChangeNotifier {
     }
     await _seedIfNeeded();
     notifyListeners();
+  }
+
+  static Future<void> _createNotes(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS notes(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        quote_id INTEGER NOT NULL,
+        text TEXT NOT NULL,
+        created INTEGER NOT NULL DEFAULT 0
+      )''');
   }
 
   /// Закрыть базу (перед сохранением или восстановлением копии).
@@ -183,6 +216,25 @@ class Store extends ChangeNotifier {
         });
       }
       await batch.commit(noResult: true);
+      // Встроенные цитаты, которых больше нет в подборке (исправленные
+      // или убранные), удаляем — кроме избранных и тех, о которых есть
+      // запись в дневнике.
+      final fresh = {
+        for (final q in (data['quotes'] as List))
+          (q as Map<String, dynamic>)['t'] as String,
+      };
+      final stale = <int>[];
+      for (final r in await txn.rawQuery(
+          'SELECT id, text FROM quotes WHERE builtin = 1 AND favorite = 0 '
+          'AND id NOT IN (SELECT quote_id FROM notes)')) {
+        if (!fresh.contains(r['text'])) stale.add(r['id'] as int);
+      }
+      for (var i = 0; i < stale.length; i += 500) {
+        final part = stale.skip(i).take(500).toList();
+        await txn.rawDelete(
+            'DELETE FROM quotes WHERE id IN (${part.map((_) => '?').join(',')})',
+            part);
+      }
     });
     await setSetting('seed_version', '$_seedVersion');
   }
@@ -205,18 +257,31 @@ class Store extends ChangeNotifier {
            s.name AS source_name, s.url AS source_url
     FROM quotes q LEFT JOIN sources s ON s.id = q.source_id''';
 
-  /// Цитаты, участвующие в «мысли дня»: из включённых источников.
-  /// Порядок — по id, чтобы перемешивание было воспроизводимым.
+  /// Какие цитаты показывать: 'all' | 'ru' | 'en'.
+  String get lang => setting('lang', 'all');
+
+  bool langOk(Quote q) =>
+      lang == 'all' || (lang == 'ru' ? q.russian : !q.russian);
+
+  /// Цитаты, участвующие в «мысли дня»: из включённых источников
+  /// и на выбранном языке. Порядок — по id, чтобы перемешивание
+  /// было воспроизводимым.
   Future<List<Quote>> dailyPool() async {
     final rows = await _db.rawQuery(
         '$_quoteSelect WHERE s.enabled = 1 ORDER BY q.id');
-    return rows.map(Quote.fromRow).toList();
+    final all = rows.map(Quote.fromRow).toList();
+    final list = all.where(langOk).toList();
+    // Если на выбранном языке ничего нет — показать всё.
+    return list.isEmpty ? all : list;
   }
 
   Future<List<Quote>> search({
     String text = '',
     bool favoritesOnly = false,
     int? sourceId,
+    String? author,
+    String? topic,
+    bool respectLang = false,
   }) async {
     final where = <String>[];
     final args = <Object?>[];
@@ -225,12 +290,21 @@ class Store extends ChangeNotifier {
       where.add('q.source_id = ?');
       args.add(sourceId);
     }
+    if (author != null) {
+      where.add('q.author = ?');
+      args.add(author);
+    }
     final rows = await _db.rawQuery(
       '$_quoteSelect ${where.isEmpty ? '' : 'WHERE ${where.join(' AND ')}'} '
       'ORDER BY q.author COLLATE NOCASE, q.id',
       args,
     );
     var list = rows.map(Quote.fromRow).toList();
+    if (respectLang) list = list.where(langOk).toList();
+    if (topic != null) {
+      final t = topicById(topic);
+      if (t != null) list = list.where(t.matches).toList();
+    }
     final needle = text.trim().toLowerCase();
     if (needle.isNotEmpty) {
       // SQLite LOWER() не умеет кириллицу, поэтому фильтруем в Dart.
@@ -291,6 +365,7 @@ class Store extends ChangeNotifier {
   }
 
   Future<void> deleteQuote(int id) async {
+    await _db.delete('notes', where: 'quote_id = ?', whereArgs: [id]);
     await _db.delete('quotes', where: 'id = ?', whereArgs: [id]);
     notifyListeners();
   }
@@ -300,6 +375,91 @@ class Store extends ChangeNotifier {
         "SELECT DISTINCT author FROM quotes WHERE author <> '' "
         'ORDER BY author COLLATE NOCASE');
     return rows.map((r) => r['author'] as String).toList();
+  }
+
+  /// Все цитаты на выбранном языке (для ленты, тем и авторов).
+  Future<List<Quote>> allForLang() async {
+    final rows = await _db.rawQuery(
+        '$_quoteSelect WHERE s.enabled = 1 ORDER BY q.id');
+    return rows.map(Quote.fromRow).where(langOk).toList();
+  }
+
+  // ---------- Дневник ----------
+
+  Future<List<Note>> notes() async {
+    final rows = await _db.rawQuery('''
+      SELECT n.id AS nid, n.quote_id, n.text AS ntext, n.created AS ncreated,
+             q.id, q.text, q.author, q.source_id, q.favorite, q.builtin,
+             s.name AS source_name, s.url AS source_url
+      FROM notes n
+      LEFT JOIN quotes q ON q.id = n.quote_id
+      LEFT JOIN sources s ON s.id = q.source_id
+      ORDER BY n.created DESC''');
+    return [
+      for (final r in rows)
+        Note(
+          id: r['nid'] as int,
+          quoteId: r['quote_id'] as int,
+          text: (r['ntext'] as String?) ?? '',
+          created:
+              DateTime.fromMillisecondsSinceEpoch((r['ncreated'] as int?) ?? 0),
+          quote: r['id'] == null ? null : Quote.fromRow(r),
+        ),
+    ];
+  }
+
+  Future<Note?> noteFor(int quoteId) async {
+    final rows = await _db.query('notes',
+        where: 'quote_id = ?', whereArgs: [quoteId], orderBy: 'created DESC',
+        limit: 1);
+    if (rows.isEmpty) return null;
+    final r = rows.first;
+    return Note(
+      id: r['id'] as int,
+      quoteId: quoteId,
+      text: (r['text'] as String?) ?? '',
+      created: DateTime.fromMillisecondsSinceEpoch((r['created'] as int?) ?? 0),
+    );
+  }
+
+  /// Сохранить размышление (одно на цитату; пустой текст — удалить).
+  Future<void> saveNote(int quoteId, String text) async {
+    final t = text.trim();
+    await _db.delete('notes', where: 'quote_id = ?', whereArgs: [quoteId]);
+    if (t.isNotEmpty) {
+      await _db.insert('notes', {
+        'quote_id': quoteId,
+        'text': t,
+        'created': DateTime.now().millisecondsSinceEpoch,
+      });
+    }
+    notifyListeners();
+  }
+
+  Future<int> noteCount() async {
+    final r = await _db.rawQuery('SELECT COUNT(*) AS c FROM notes');
+    return (r.first['c'] as int?) ?? 0;
+  }
+
+  // ---------- Дни подряд ----------
+
+  static String _dayKey(DateTime d) =>
+      '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+
+  int get streak => int.tryParse(setting('streak', '0')) ?? 0;
+  int get bestStreak => int.tryParse(setting('streak_best', '0')) ?? 0;
+
+  /// Отметить, что сегодня мысль дня прочитана.
+  Future<void> markVisit() async {
+    final now = DateTime.now();
+    final today = _dayKey(now);
+    final last = setting('streak_last');
+    if (last == today) return;
+    final yesterday = _dayKey(DateTime(now.year, now.month, now.day - 1));
+    final n = last == yesterday ? streak + 1 : 1;
+    await setSetting('streak_last', today);
+    await setSetting('streak', '$n');
+    if (n > bestStreak) await setSetting('streak_best', '$n');
   }
 
   Future<int> quoteCount() async {
@@ -353,6 +513,10 @@ class Store extends ChangeNotifier {
   /// Удаляет источник вместе с его цитатами.
   Future<void> deleteSource(int id) async {
     await _db.transaction((txn) async {
+      await txn.rawDelete(
+          'DELETE FROM notes WHERE quote_id IN '
+          '(SELECT id FROM quotes WHERE source_id = ?)',
+          [id]);
       await txn.delete('quotes', where: 'source_id = ?', whereArgs: [id]);
       await txn.delete('sources', where: 'id = ?', whereArgs: [id]);
     });

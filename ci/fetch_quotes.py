@@ -84,6 +84,7 @@ EN_SOURCES = [
     dict(k="en_marcus", n="Marcus Aurelius. Meditations", author="Marcus Aurelius",
          d="Translated by George Long, 1862. Books II–XII.",
          titles="prefix:" + MA + "Book ", exclude=r"/Book I$", mode="paras", maxlen=420,
+         nodigits=True,
          u=ws_url(MA.rstrip("/"), True)),
     dict(k="en_rochefoucauld", n="La Rochefoucauld. Moral Reflections, Sentences and Maxims",
          author="François de La Rochefoucauld", d="Newly translated from the French, 1851",
@@ -113,7 +114,8 @@ EN_SOURCES = [
          mode="paras", maxlen=420, u=ws_url(CONF.rstrip("/"), True)),
     dict(k="en_dhammapada", n="The Dhammapada", author="The Dhammapada",
          d="Translated by F. Max Müller, 1881",
-         titles=["Dhammapada (Muller)"], mode="paras", maxlen=380),
+         titles=["Dhammapada (Muller)"], mode="paras", maxlen=380,
+         skip=r"^Him I call indeed a Brahmana"),
 ]
 for _s in EN_SOURCES:
     _s["en"] = True
@@ -481,6 +483,11 @@ def polish(t):
     t = re.sub(r"\s*\(\d{1,3}\)", "", t)
     t = re.sub(r"(?<=[»\"])\s*\d{1,3}(?=[\s.,;:!?]|$)", "", t)
     t = re.sub(r"\s*\[[^\]]*(?:[A-Za-z]|прим\.|См\.)[^\]]*\]", "", t)
+    # английские ссылки на места книги: «(viii. 20)», «(i. c. 19)», «(vii. 29; ix. 38)»
+    t = re.sub(r"\s*\((?:[ivxlc]+\.\s*(?:c\.\s*)?\d+[;,]?\s*)+\)", "", t)
+    # перенос слова при наборе: «ren- dered» → «rendered»
+    t = re.sub(r"([a-z])-\s+([a-z])", r"\1\2", t)
+    t = re.sub(r"\s*\n\s*", " ", t) if re.search(r"[a-z]", t) and not re.search(r"[а-яё]", t) else t
     t = re.sub(r"\s+([,.;:!?])", r"\1", t)
     return t.strip()
 
@@ -548,6 +555,12 @@ def collect():
                         continue
                     text = re.sub(src["strip"], "", text).strip()
                 text = polish(text)
+                if src.get("nodigits") and re.search(r"\d", text):
+                    dropped += 1
+                    continue
+                if src.get("skip") and re.search(src["skip"], text):
+                    dropped += 1
+                    continue
                 if not good(text, src["maxlen"], en=en):
                     dropped += 1
                     continue

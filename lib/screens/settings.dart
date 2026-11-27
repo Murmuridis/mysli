@@ -17,6 +17,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final store = Store.instance;
   int _count = 0;
   int _sources = 0;
+  int _notes = 0;
 
   @override
   void initState() {
@@ -29,9 +30,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
     try {
       final c = await store.quoteCount();
       final src = (await store.sources()).length;
+      final notes = await store.noteCount();
       if (mounted) {
         setState(() {
           _count = c;
+          _notes = notes;
           _sources = src;
         });
       }
@@ -101,7 +104,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       builder: (c) => AlertDialog(
         title: Text('Восстановить копию$when?'),
         content: Text(
-            'Все текущие цитаты, избранное, источники и настройки '
+            'Все текущие цитаты, избранное, дневник, источники и настройки '
             'будут заменены данными из копии.'),
         actions: [
           TextButton(
@@ -150,16 +153,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
     await Reminder.sync();
   }
 
-  Future<void> _pickTime() async {
+  /// Изменить время [index] (или добавить новое, если index == null).
+  Future<void> _pickTime(int? index) async {
+    final list = List.of(Reminder.times);
+    final cur = index == null ? (list.isEmpty ? 480 : (list.last + 240) % 1440) : list[index];
     final t = await showTimePicker(
       context: context,
-      initialTime: TimeOfDay(hour: Reminder.hour, minute: Reminder.minute),
+      initialTime: TimeOfDay(hour: cur ~/ 60, minute: cur % 60),
       helpText: 'Время напоминания',
     );
     if (t == null) return;
-    await store.setSetting('reminder_hour', '${t.hour}');
-    await store.setSetting('reminder_minute', '${t.minute}');
-    await Reminder.sync();
+    final m = t.hour * 60 + t.minute;
+    if (index == null) {
+      list.add(m);
+    } else {
+      list[index] = m;
+    }
+    await Reminder.setTimes(list);
+  }
+
+  Future<void> _removeTime(int index) async {
+    final list = List.of(Reminder.times)..removeAt(index);
+    await Reminder.setTimes(list);
   }
 
   @override
@@ -167,8 +182,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final scheme = Theme.of(context).colorScheme;
     final scale = textScale();
     final mode = store.setting('theme', 'system');
-    final time =
-        '${Reminder.hour.toString().padLeft(2, '0')}:${Reminder.minute.toString().padLeft(2, '0')}';
+    final times = Reminder.times;
     Widget header(String t) => Padding(
           padding: const EdgeInsets.fromLTRB(16, 20, 16, 6),
           child: Text(t,
@@ -184,17 +198,72 @@ class _SettingsScreenState extends State<SettingsScreen> {
         header('Напоминание'),
         SwitchListTile(
           title: const Text('Присылать мысль дня'),
-          subtitle: const Text('Уведомление с сегодняшней цитатой'),
+          subtitle: const Text('Первое напоминание — мысль дня, второе и '
+              'третье — ещё по одной мудрой мысли'),
           value: Reminder.enabled,
           onChanged: _setReminder,
         ),
+        for (var i = 0; i < times.length; i++)
+          ListTile(
+            enabled: Reminder.enabled,
+            leading: const Icon(Icons.schedule),
+            title: Text(i == 0 ? 'Мысль дня' : 'Ещё одна мысль'),
+            onTap: Reminder.enabled ? () => _pickTime(i) : null,
+            trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+              Text(Reminder.fmt(times[i]),
+                  style: const TextStyle(
+                      fontSize: 18, fontWeight: FontWeight.w700)),
+              if (times.length > 1)
+                IconButton(
+                  tooltip: 'Убрать',
+                  icon: const Icon(Icons.close, size: 20),
+                  onPressed:
+                      Reminder.enabled ? () => _removeTime(i) : null,
+                ),
+            ]),
+          ),
+        if (times.length < Reminder.maxTimes)
+          ListTile(
+            enabled: Reminder.enabled,
+            leading: const Icon(Icons.add_alarm),
+            title: const Text('Добавить напоминание'),
+            subtitle: const Text('До трёх в день'),
+            onTap: Reminder.enabled ? () => _pickTime(null) : null,
+          ),
+        header('Язык мыслей'),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: SegmentedButton<String>(
+            segments: const [
+              ButtonSegment(value: 'all', label: Text('Все')),
+              ButtonSegment(value: 'ru', label: Text('Русские')),
+              ButtonSegment(value: 'en', label: Text('English')),
+            ],
+            selected: {store.lang},
+            onSelectionChanged: (v) => store.setSetting('lang', v.first),
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 6, 16, 0),
+          child: Text(
+            'Влияет на мысль дня, ленту, темы и виджет.',
+            style: TextStyle(fontSize: 12.5, color: scheme.onSurfaceVariant),
+          ),
+        ),
+        header('Виджет'),
         ListTile(
-          enabled: Reminder.enabled,
-          leading: const Icon(Icons.schedule),
-          title: const Text('Время'),
-          trailing: Text(time,
-              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
-          onTap: Reminder.enabled ? _pickTime : null,
+          leading: const Icon(Icons.widgets_outlined),
+          title: const Text('Мысль дня на рабочем столе'),
+          subtitle: const Text('Нажмите, чтобы добавить. Или: долгое нажатие '
+              'на пустое место рабочего стола → Виджеты → «Мудрые мысли».'),
+          isThreeLine: true,
+          onTap: () async {
+            final ok = await Native.pinWidget();
+            if (!ok) {
+              _toast('Добавьте виджет вручную: долгое нажатие на рабочий '
+                  'стол → Виджеты → «Мудрые мысли».');
+            }
+          },
         ),
         header('Текст'),
         Padding(
@@ -230,7 +299,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ListTile(
           leading: const Icon(Icons.save_alt),
           title: const Text('Сохранить копию'),
-          subtitle: const Text('Цитаты, избранное, источники и настройки — '
+          subtitle: const Text('Цитаты, избранное, дневник, источники и настройки — '
               'в один файл .zip. Сохраните его на Google Диск или в «Загрузки».'),
           isThreeLine: true,
           onTap: _backup,
@@ -246,8 +315,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
           leading: const QuoteMark(size: 24),
           title: const Text('Мудрые мысли'),
           subtitle: Text('В базе ${pluralThoughts(_count)}, источников и '
-              'ссылок: $_sources. Встроенная подборка — книги в общественном '
-              'достоянии с Викитеки.'),
+              'ссылок: $_sources, записей в дневнике: $_notes. '
+              'Дней подряд: ${store.streak} (рекорд — ${store.bestStreak}). '
+              'Встроенная подборка — книги в общественном достоянии '
+              'с русской и английской Викитеки.'),
         ),
       ]),
     );

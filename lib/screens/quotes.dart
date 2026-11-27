@@ -11,14 +11,26 @@ import 'edit.dart';
 class QuotesScreen extends StatefulWidget {
   final bool favoritesOnly;
   final int? sourceId;
-  const QuotesScreen({super.key, this.favoritesOnly = false, this.sourceId});
+  final String? author;
+  final String? topic;
+  final bool respectLang;
+  final String initialSearch;
+  const QuotesScreen({
+    super.key,
+    this.favoritesOnly = false,
+    this.sourceId,
+    this.author,
+    this.topic,
+    this.respectLang = false,
+    this.initialSearch = '',
+  });
 
   @override
   State<QuotesScreen> createState() => _QuotesScreenState();
 }
 
 class _QuotesScreenState extends State<QuotesScreen> {
-  final _search = TextEditingController();
+  late final _search = TextEditingController(text: widget.initialSearch);
   List<Quote> _items = [];
   bool _loading = true;
 
@@ -41,6 +53,9 @@ class _QuotesScreenState extends State<QuotesScreen> {
       text: _search.text,
       favoritesOnly: widget.favoritesOnly,
       sourceId: widget.sourceId,
+      author: widget.author,
+      topic: widget.topic,
+      respectLang: widget.respectLang,
     );
     if (mounted) {
       setState(() {
@@ -78,7 +93,7 @@ class _QuotesScreenState extends State<QuotesScreen> {
       if (!_loading)
         Padding(
           padding: const EdgeInsets.only(bottom: 4),
-          child: Text(pluralQuotes(_items.length),
+          child: Text(pluralThoughts(_items.length),
               style: TextStyle(fontSize: 12.5, color: scheme.onSurfaceVariant)),
         ),
       Expanded(
@@ -97,16 +112,16 @@ class _QuotesScreenState extends State<QuotesScreen> {
                     padding: const EdgeInsets.fromLTRB(12, 0, 12, 90),
                     itemCount: _items.length,
                     separatorBuilder: (_, __) => const SizedBox(height: 8),
-                    itemBuilder: (_, i) => _QuoteTile(quote: _items[i]),
+                    itemBuilder: (_, i) => QuoteTile(quote: _items[i]),
                   ),
       ),
     ]);
   }
 }
 
-class _QuoteTile extends StatelessWidget {
+class QuoteTile extends StatelessWidget {
   final Quote quote;
-  const _QuoteTile({required this.quote});
+  const QuoteTile({super.key, required this.quote});
 
   @override
   Widget build(BuildContext context) {
@@ -232,6 +247,29 @@ class _QuoteSheetState extends State<_QuoteSheet> {
             ),
           ]),
         ),
+      ),
+    );
+  }
+}
+
+/// Отдельная страница со списком: по автору, по теме или поиск.
+class QuoteListPage extends StatelessWidget {
+  final String title;
+  final String? author;
+  final String? topic;
+  final String search;
+  const QuoteListPage(
+      {super.key, required this.title, this.author, this.topic, this.search = ''});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text(title)),
+      body: QuotesScreen(
+        author: author,
+        topic: topic,
+        respectLang: true,
+        initialSearch: search,
       ),
     );
   }

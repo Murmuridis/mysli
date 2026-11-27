@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 
 import '../daily.dart';
+import '../native.dart';
 import '../store.dart';
 import '../theme.dart';
 import '../widgets.dart';
@@ -20,6 +21,7 @@ class _TodayScreenState extends State<TodayScreen> {
   int _offset = 0; // 0 — сегодня, -1 — вчера, +1 — завтра
   Quote? _random; // если выбрана «случайная» цитата
   bool _loading = true;
+  bool _widgetTip = false;
   final _rnd = Random();
 
   @override
@@ -27,6 +29,18 @@ class _TodayScreenState extends State<TodayScreen> {
     super.initState();
     Store.instance.addListener(_reload);
     _reload();
+    _checkWidgetTip();
+  }
+
+  Future<void> _checkWidgetTip() async {
+    if (Store.instance.setting('widget_tip_done') == '1') return;
+    final ok = await Native.widgetSupported();
+    if (mounted && ok) setState(() => _widgetTip = true);
+  }
+
+  Future<void> _closeWidgetTip() async {
+    setState(() => _widgetTip = false);
+    await Store.instance.setSetting('widget_tip_done', '1');
   }
 
   @override
@@ -114,6 +128,15 @@ class _TodayScreenState extends State<TodayScreen> {
                 Text('${formatDate(_day)}, ${formatWeekday(_day)}',
                     textAlign: TextAlign.center,
                     style: const TextStyle(fontSize: 15)),
+                if (Store.instance.streak > 1)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text(
+                      '🔥 ${pluralDays(Store.instance.streak)} подряд',
+                      style: TextStyle(
+                          fontSize: 12.5, color: scheme.onSurfaceVariant),
+                    ),
+                  ),
               ]),
             ),
             IconButton(
@@ -165,6 +188,48 @@ class _TodayScreenState extends State<TodayScreen> {
                 ),
             ],
           ),
+          if (_widgetTip) ...[
+            const SizedBox(height: 18),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 12, 8, 8),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(children: [
+                      Icon(Icons.widgets_outlined, color: scheme.secondary),
+                      const SizedBox(width: 10),
+                      const Expanded(
+                        child: Text('Мысль дня на рабочем столе',
+                            style: TextStyle(fontWeight: FontWeight.w700)),
+                      ),
+                      IconButton(
+                          tooltip: 'Скрыть',
+                          icon: const Icon(Icons.close, size: 20),
+                          onPressed: _closeWidgetTip),
+                    ]),
+                    Text(
+                      'Виджет показывает сегодняшнюю мысль прямо на экране '
+                      'телефона — даже не открывая приложение.',
+                      style: TextStyle(
+                          fontSize: 13.5, color: scheme.onSurfaceVariant),
+                    ),
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: TextButton.icon(
+                        onPressed: () async {
+                          await Native.pinWidget();
+                          await _closeWidgetTip();
+                        },
+                        icon: const Icon(Icons.add),
+                        label: const Text('Добавить виджет'),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
           const SizedBox(height: 18),
           Text(
             'В подборке ${pluralThoughts(_ordered.length)}. Каждый день — новая, '

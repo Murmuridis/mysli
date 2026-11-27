@@ -17,59 +17,84 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * Ежедневное напоминание со «мыслью дня».
+ * Напоминания (до трёх в день): первое — «мысль дня», остальные —
+ * ещё по одной мудрой мысли.
  *
  * Приложение заранее передаёт сюда цитаты на ближайшие дни (см. Reminder в
  * lib/native.dart), а будильник Android в нужное время показывает
- * уведомление с сегодняшней цитатой и ставит себя на следующий день.
+ * уведомление и ставит себя на следующий день. Те же цитаты берёт виджет.
  */
 object Reminders {
-    private const val PREFS = "mysli_reminder"
+    const val PREFS = "mysli_reminder"
     private const val CHANNEL = "daily_word"
     private const val NOTIFICATION_ID = 1001
+    const val MAX_SLOTS = 3
     const val ACTION_FIRE = "nl.mikem.mudrye_mysli.REMINDER"
 
-    fun save(ctx: Context, hour: Int, minute: Int, quotes: String) {
+    /** Цитаты на ближайшие дни: {"2026-11-27": [{t, a}, …], …}. Нужны и виджету. */
+    fun saveQuotes(ctx: Context, quotes: String) {
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-            .putBoolean("on", true)
-            .putInt("hour", hour)
-            .putInt("minute", minute)
-            .putString("quotes", quotes)
+            .putString("quotes", quotes).apply()
+    }
+
+    /** Время напоминаний — минуты от полуночи, до трёх в день. */
+    fun save(ctx: Context, times: List<Int>) {
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putBoolean("on", times.isNotEmpty())
+            .putString("times", times.take(MAX_SLOTS).joinToString(","))
             .apply()
+    }
+
+    private fun times(ctx: Context): List<Int> {
+        val prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        if (!prefs.getBoolean("on", false)) return emptyList()
+        return (prefs.getString("times", "") ?: "").split(',')
+            .mapNotNull { it.trim().toIntOrNull() }.take(MAX_SLOTS)
     }
 
     fun disable(ctx: Context) {
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .putBoolean("on", false).apply()
-        alarmManager(ctx).cancel(pendingIntent(ctx))
+        val am = alarmManager(ctx)
+        for (slot in 0 until MAX_SLOTS) am.cancel(pendingIntent(ctx, slot))
     }
 
     private fun alarmManager(ctx: Context) =
         ctx.getSystemService(Context.ALARM_SERVICE) as AlarmManager
 
-    private fun pendingIntent(ctx: Context): PendingIntent {
-        val i = Intent(ctx, ReminderReceiver::class.java).setAction(ACTION_FIRE)
+    private fun pendingIntent(ctx: Context, slot: Int): PendingIntent {
+        val i = Intent(ctx, ReminderReceiver::class.java)
+            .setAction(ACTION_FIRE)
+            .putExtra("slot", slot)
         return PendingIntent.getBroadcast(
-            ctx, NOTIFICATION_ID, i,
+            ctx, NOTIFICATION_ID + slot, i,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
     }
 
-    /** Поставить будильник на ближайшее наступление выбранного времени. */
+    /** Поставить будильники на ближайшее наступление каждого времени. */
     fun schedule(ctx: Context) {
-        val prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        if (!prefs.getBoolean("on", false)) return
-        val now = Calendar.getInstance()
-        val next = Calendar.getInstance().apply {
-            set(Calendar.HOUR_OF_DAY, prefs.getInt("hour", 8))
-            set(Calendar.MINUTE, prefs.getInt("minute", 0))
-            set(Calendar.SECOND, 0)
-            set(Calendar.MILLISECOND, 0)
-            if (!after(now)) add(Calendar.DAY_OF_YEAR, 1)
-        }
+        val list = times(ctx)
         val am = alarmManager(ctx)
-        val pi = pendingIntent(ctx)
-        val at = next.timeInMillis
+        for (slot in 0 until MAX_SLOTS) {
+            if (slot >= list.size) {
+                am.cancel(pendingIntent(ctx, slot))
+                continue
+            }
+            val m = list[slot]
+            val now = Calendar.getInstance()
+            val next = Calendar.getInstance().apply {
+                set(Calendar.HOUR_OF_DAY, m / 60)
+                set(Calendar.MINUTE, m % 60)
+                set(Calendar.SECOND, 0)
+                set(Calendar.MILLISECOND, 0)
+                if (!after(now)) add(Calendar.DAY_OF_YEAR, 1)
+            }
+            setAlarm(am, next.timeInMillis, pendingIntent(ctx, slot))
+        }
+    }
+
+    private fun setAlarm(am: AlarmManager, at: Long, pi: PendingIntent) {
         try {
             when {
                 Build.VERSION.SDK_INT >= 31 && !am.canScheduleExactAlarms() ->
@@ -96,31 +121,36 @@ object Reminders {
         return if (Build.VERSION.SDK_INT >= 24) nm.areNotificationsEnabled() else true
     }
 
-    /** Показать уведомление с сегодняшней цитатой. */
-    fun show(ctx: Context) {
+    /** Цитата на сегодня: slot 0 — мысль дня, 1 и 2 — дополнительные. */
+    fun quoteFor(ctx: Context, slot: Int): Pair<String, String>? {
         val prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        if (!prefs.getBoolean("on", false)) return
+        val key = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+        return try {
+            val arr = JSONObject(prefs.getString("quotes", "{}") ?: "{}").optJSONArray(key)
+                ?: return null
+            val q = arr.optJSONObject(slot.coerceAtMost(arr.length() - 1)) ?: return null
+            Pair(q.optString("t", ""), q.optString("a", ""))
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /** Показать уведомление с цитатой. */
+    fun show(ctx: Context, slot: Int) {
+        if (times(ctx).isEmpty()) return
         if (!notificationsAllowed(ctx)) return
 
-        val key = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
-        var text = "Откройте приложение, чтобы прочитать мысль на сегодня."
-        var author = ""
-        try {
-            val all = JSONObject(prefs.getString("quotes", "{}") ?: "{}")
-            val q = all.optJSONObject(key)
-            if (q != null) {
-                text = q.optString("t", text)
-                author = q.optString("a", "")
-            }
-        } catch (_: Exception) {
-        }
+        val q = quoteFor(ctx, slot)
+        val text = q?.first?.takeIf { it.isNotEmpty() }
+            ?: "Откройте приложение, чтобы прочитать мысль на сегодня."
+        val author = q?.second ?: ""
 
         val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (Build.VERSION.SDK_INT >= 26) {
             val ch = NotificationChannel(
                 CHANNEL, "Мысль дня", NotificationManager.IMPORTANCE_DEFAULT
             )
-            ch.description = "Ежедневное напоминание с цитатой"
+            ch.description = "Напоминания с цитатой"
             nm.createNotificationChannel(ch)
         }
         val open = Intent(ctx, MainActivity::class.java)
@@ -129,17 +159,22 @@ object Reminders {
             ctx, 0, open,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+        val title = when {
+            slot == 0 && author.isEmpty() -> "Мысль на сегодня"
+            author.isEmpty() -> "Мудрая мысль"
+            else -> author
+        }
         val big = if (author.isEmpty()) text else "$text\n— $author"
         val builder = newBuilder(ctx, CHANNEL)
             .setSmallIcon(R.drawable.ic_stat_quote)
-            .setContentTitle(if (author.isEmpty()) "Мысль на сегодня" else author)
+            .setContentTitle(title)
             .setContentText(text)
             .setStyle(Notification.BigTextStyle().bigText(big))
             .setContentIntent(contentIntent)
             .setAutoCancel(true)
-        if (Build.VERSION.SDK_INT >= 21) builder.setColor(0xFF8E2A22.toInt())
+        if (Build.VERSION.SDK_INT >= 21) builder.setColor(0xFF1F4E5F.toInt())
         try {
-            nm.notify(NOTIFICATION_ID, builder.build())
+            nm.notify(NOTIFICATION_ID + slot, builder.build())
         } catch (_: SecurityException) {
         }
     }
@@ -154,9 +189,10 @@ object Reminders {
 class ReminderReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action == Reminders.ACTION_FIRE) {
-            Reminders.show(context)
+            Reminders.show(context, intent.getIntExtra("slot", 0))
         }
         Reminders.schedule(context)
+        QuoteWidget.updateAll(context)
     }
 }
 
@@ -164,5 +200,6 @@ class ReminderReceiver : BroadcastReceiver() {
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         Reminders.schedule(context)
+        QuoteWidget.updateAll(context)
     }
 }

@@ -2,7 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 
 import 'native.dart';
+import 'screens/browse.dart';
 import 'screens/edit.dart';
+import 'screens/feed.dart';
+import 'screens/journal.dart';
+import 'screens/onboarding.dart';
 import 'screens/quotes.dart';
 import 'screens/settings.dart';
 import 'screens/sources.dart';
@@ -45,10 +49,30 @@ class MysliApp extends StatelessWidget {
             GlobalWidgetsLocalizations.delegate,
             GlobalCupertinoLocalizations.delegate,
           ],
-          home: const HomeScreen(),
+          home: const _Start(),
         );
       },
     );
+  }
+}
+
+/// При первом запуске — знакомство, потом главный экран.
+class _Start extends StatefulWidget {
+  const _Start();
+
+  @override
+  State<_Start> createState() => _StartState();
+}
+
+class _StartState extends State<_Start> {
+  late bool _onboarded = Store.instance.setting('onboarded') == '1';
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_onboarded) {
+      return OnboardingScreen(onDone: () => setState(() => _onboarded = true));
+    }
+    return const HomeScreen();
   }
 }
 
@@ -61,11 +85,13 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   int _tab = 0;
+  int _mine = 0; // 0 — избранное, 1 — дневник
 
   static const _titles = [
     'Мудрые мысли',
-    'Все мысли',
-    'Избранное',
+    'Лента',
+    'Обзор',
+    'Моё',
     'Источники',
   ];
 
@@ -73,6 +99,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    Store.instance.markVisit();
   }
 
   @override
@@ -85,25 +112,51 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       // Наступил новый день или приложение долго не открывали —
-      // обновить «мысль дня» и расписание напоминаний.
+      // обновить «мысль дня», серию дней и расписание напоминаний.
       setState(() {});
+      Store.instance.markVisit();
       Reminder.sync();
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     final body = switch (_tab) {
       0 => const TodayScreen(),
-      1 => const QuotesScreen(key: ValueKey('all')),
-      2 => const QuotesScreen(key: ValueKey('fav'), favoritesOnly: true),
+      1 => const FeedScreen(),
+      2 => const BrowseScreen(),
+      3 => Column(children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: SegmentedButton<int>(
+              segments: const [
+                ButtonSegment(
+                    value: 0,
+                    icon: Icon(Icons.favorite_border),
+                    label: Text('Избранное')),
+                ButtonSegment(
+                    value: 1,
+                    icon: Icon(Icons.edit_note),
+                    label: Text('Дневник')),
+              ],
+              selected: {_mine},
+              onSelectionChanged: (v) => setState(() => _mine = v.first),
+            ),
+          ),
+          Expanded(
+            child: _mine == 0
+                ? const QuotesScreen(key: ValueKey('fav'), favoritesOnly: true)
+                : const JournalScreen(),
+          ),
+        ]),
       _ => const SourcesScreen(),
     };
     return Scaffold(
       appBar: AppBar(
         title: Text(_titles[_tab]),
         leadingWidth: 48,
-        leading: const Center(child: QuoteMark(size: 24)),
+        leading: Center(child: QuoteMark(size: 24, color: scheme.secondary)),
         actions: [
           IconButton(
             tooltip: 'Настройки',
@@ -115,12 +168,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       ),
       body: body,
       floatingActionButton: switch (_tab) {
-        1 => FloatingActionButton(
-            tooltip: 'Добавить цитату',
+        3 when _mine == 0 => FloatingActionButton(
+            tooltip: 'Добавить свою мысль',
             onPressed: () => editQuote(context),
             child: const Icon(Icons.add),
           ),
-        3 => FloatingActionButton.extended(
+        4 => FloatingActionButton.extended(
             onPressed: () async {
               final id = await editSource(context);
               if (id != null && context.mounted) {
@@ -135,40 +188,39 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           ),
         _ => null,
       },
-      bottomNavigationBar: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // Подписи меню не увеличиваем вместе с системным шрифтом,
-          // иначе «Избранное» и «Источники» переносятся по буквам.
-          MediaQuery(
-            data: MediaQuery.of(context).copyWith(
-              textScaler: MediaQuery.textScalerOf(context)
-                  .clamp(maxScaleFactor: 1.0),
-            ),
-            child: NavigationBar(
-            selectedIndex: _tab,
-            onDestinationSelected: (i) => setState(() => _tab = i),
-            destinations: const [
-              NavigationDestination(
-                  icon: Icon(Icons.wb_sunny_outlined),
-                  selectedIcon: Icon(Icons.wb_sunny),
-                  label: 'Сегодня'),
-              NavigationDestination(
-                  icon: Icon(Icons.format_quote_outlined),
-                  selectedIcon: Icon(Icons.format_quote),
-                  label: 'Мысли'),
-              NavigationDestination(
-                  icon: Icon(Icons.favorite_border),
-                  selectedIcon: Icon(Icons.favorite),
-                  label: 'Избранное'),
-              NavigationDestination(
-                  icon: Icon(Icons.local_library_outlined),
-                  selectedIcon: Icon(Icons.local_library),
-                  label: 'Источники'),
-            ],
-          ),
-          ),
-        ],
+      bottomNavigationBar: MediaQuery(
+        // Подписи меню не увеличиваем вместе с системным шрифтом,
+        // иначе «Источники» переносятся по буквам.
+        data: MediaQuery.of(context).copyWith(
+          textScaler:
+              MediaQuery.textScalerOf(context).clamp(maxScaleFactor: 1.0),
+        ),
+        child: NavigationBar(
+          selectedIndex: _tab,
+          onDestinationSelected: (i) => setState(() => _tab = i),
+          destinations: const [
+            NavigationDestination(
+                icon: Icon(Icons.wb_sunny_outlined),
+                selectedIcon: Icon(Icons.wb_sunny),
+                label: 'Сегодня'),
+            NavigationDestination(
+                icon: Icon(Icons.swipe_up_outlined),
+                selectedIcon: Icon(Icons.swipe_up),
+                label: 'Лента'),
+            NavigationDestination(
+                icon: Icon(Icons.explore_outlined),
+                selectedIcon: Icon(Icons.explore),
+                label: 'Обзор'),
+            NavigationDestination(
+                icon: Icon(Icons.bookmark_border),
+                selectedIcon: Icon(Icons.bookmark),
+                label: 'Моё'),
+            NavigationDestination(
+                icon: Icon(Icons.local_library_outlined),
+                selectedIcon: Icon(Icons.local_library),
+                label: 'Источники'),
+          ],
+        ),
       ),
     );
   }

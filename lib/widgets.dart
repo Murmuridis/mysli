@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'native.dart';
+import 'screens/journal.dart';
 import 'screens/share_card.dart';
 import 'store.dart';
 import 'theme.dart';
@@ -149,7 +152,7 @@ class QuoteText extends StatelessWidget {
   }
 }
 
-/// Действия с цитатой: избранное, поделиться, скопировать.
+/// Действия с цитатой: избранное, поделиться, озвучить, размышление.
 class QuoteActions extends StatelessWidget {
   final Quote quote;
   final VoidCallback? onChanged;
@@ -181,16 +184,11 @@ class QuoteActions extends StatelessWidget {
           icon: const Icon(Icons.share_outlined),
           onPressed: () => shareQuote(context, quote),
         ),
+        SpeakButton(quote: quote),
         IconButton(
-          tooltip: 'Скопировать',
-          icon: const Icon(Icons.copy_outlined),
-          onPressed: () async {
-            await Clipboard.setData(ClipboardData(text: quote.shareText));
-            if (context.mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Цитата скопирована')));
-            }
-          },
+          tooltip: 'Размышление',
+          icon: const Icon(Icons.edit_note),
+          onPressed: () => reflect(context, quote),
         ),
         ...extra,
       ],
@@ -217,6 +215,11 @@ Future<void> shareQuote(BuildContext context, Quote quote) async {
           subtitle: const Text('Открытка с цитатой — можно выбрать оформление'),
           onTap: () => Navigator.pop(c, 'image'),
         ),
+        ListTile(
+          leading: const Icon(Icons.copy_outlined),
+          title: const Text('Скопировать'),
+          onTap: () => Navigator.pop(c, 'copy'),
+        ),
         const SizedBox(height: 8),
       ]),
     ),
@@ -224,9 +227,88 @@ Future<void> shareQuote(BuildContext context, Quote quote) async {
   if (!context.mounted) return;
   if (how == 'text') {
     await Native.share(quote.shareText);
+  } else if (how == 'copy') {
+    await Clipboard.setData(ClipboardData(text: quote.shareText));
+    if (context.mounted) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Цитата скопирована')));
+    }
   } else if (how == 'image') {
     await Navigator.push(context,
         MaterialPageRoute(builder: (_) => ShareCardScreen(quote: quote)));
+  }
+}
+
+/// Озвучить цитату (синтезатор речи телефона). Повторное нажатие — стоп.
+class SpeakButton extends StatefulWidget {
+  final Quote quote;
+  final Color? color;
+  const SpeakButton({super.key, required this.quote, this.color});
+
+  @override
+  State<SpeakButton> createState() => _SpeakButtonState();
+}
+
+class _SpeakButtonState extends State<SpeakButton> {
+  bool _speaking = false;
+  Timer? _poll;
+
+  @override
+  void dispose() {
+    _poll?.cancel();
+    if (_speaking) Native.speakStop();
+    super.dispose();
+  }
+
+  @override
+  void didUpdateWidget(SpeakButton old) {
+    super.didUpdateWidget(old);
+    if (old.quote.id != widget.quote.id && _speaking) _stop();
+  }
+
+  void _stop() {
+    _poll?.cancel();
+    Native.speakStop();
+    if (mounted) setState(() => _speaking = false);
+  }
+
+  Future<void> _start() async {
+    final q = widget.quote;
+    final text = q.author.isEmpty ? q.text : '${q.text}\n${q.author}.';
+    setState(() => _speaking = true);
+    await Native.speak(text, russian: q.russian);
+    var waited = 0;
+    _poll?.cancel();
+    _poll = Timer.periodic(const Duration(milliseconds: 400), (t) async {
+      waited++;
+      final st = await Native.speakState();
+      if (!mounted) {
+        t.cancel();
+        return;
+      }
+      if (st == 'no_voice') {
+        t.cancel();
+        setState(() => _speaking = false);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(q.russian
+                ? 'В телефоне нет русского голоса. Установите его: Настройки '
+                    '→ Язык → Синтез речи.'
+                : 'В телефоне нет английского голоса для озвучки.')));
+      } else if (st == 'stopped' && waited > 3) {
+        t.cancel();
+        setState(() => _speaking = false);
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      tooltip: _speaking ? 'Остановить' : 'Прочитать вслух',
+      icon: Icon(_speaking ? Icons.stop_circle_outlined : Icons.volume_up_outlined,
+          color: widget.color),
+      onPressed: _speaking ? _stop : _start,
+    );
   }
 }
 

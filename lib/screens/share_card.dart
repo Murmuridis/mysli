@@ -14,7 +14,9 @@ class CardStyle {
   final List<Color> bg; // градиент сверху вниз
   final Color text;
   final Color accent;
-  const CardStyle(this.name, this.bg, this.text, this.accent);
+  final bool sans; // шрифт без засечек
+  const CardStyle(this.name, this.bg, this.text, this.accent,
+      {this.sans = false});
 }
 
 const cardStyles = [
@@ -26,6 +28,16 @@ const cardStyles = [
       Color(0xFFD9C27A)),
   CardStyle('Закат', [Color(0xFF7A3B2E), Color(0xFF3B1F2B)], Color(0xFFFBEFE3),
       Color(0xFFF2C38B)),
+  CardStyle('Море', [Color(0xFF0F4C5C), Color(0xFF082A33)], Color(0xFFE8F4F2),
+      Color(0xFF8FD3C8)),
+  CardStyle('Графит', [Color(0xFF2B2B2E), Color(0xFF141416)], Color(0xFFF2F2F2),
+      Color(0xFFE8C46A),
+      sans: true),
+  CardStyle('Лаванда', [Color(0xFFE9E3F5), Color(0xFFD6CCEA)],
+      Color(0xFF2E2440), Color(0xFF6A4C93)),
+  CardStyle('Мята', [Color(0xFFE6F2EC), Color(0xFFCFE5DA)], Color(0xFF1E3A30),
+      Color(0xFF2F7A5C),
+      sans: true),
 ];
 
 /// Открытка с цитатой: выбор оформления и «Поделиться картинкой».
@@ -176,7 +188,7 @@ class QuoteCard extends StatelessWidget {
                     quote.text,
                     textAlign: TextAlign.center,
                     style: TextStyle(
-                      fontFamily: quoteFont,
+                      fontFamily: style.sans ? uiFont : quoteFont,
                       fontSize: w * k,
                       height: 1.38,
                       color: style.text,

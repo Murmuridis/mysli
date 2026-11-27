@@ -116,11 +116,16 @@ class MainActivity : FlutterActivity() {
                         }
                     }
 
+                    "saveQuotes" -> {
+                        Reminders.saveQuotes(this, call.arguments as? String ?: "{}")
+                        QuoteWidget.updateAll(this)
+                        result.success(null)
+                    }
+
                     "scheduleReminder" -> {
-                        val hour = call.argument<Int>("hour") ?: 8
-                        val minute = call.argument<Int>("minute") ?: 0
-                        val quotes = call.argument<String>("quotes") ?: "{}"
-                        Reminders.save(this, hour, minute, quotes)
+                        val times = (call.arguments as? List<*>)
+                            ?.mapNotNull { (it as? Number)?.toInt() } ?: emptyList()
+                        Reminders.save(this, times)
                         Reminders.schedule(this)
                         result.success(null)
                     }
@@ -128,6 +133,40 @@ class MainActivity : FlutterActivity() {
                     "cancelReminder" -> {
                         Reminders.disable(this)
                         result.success(null)
+                    }
+
+                    "speak" -> {
+                        val text = call.argument<String>("text") ?: ""
+                        val ru = call.argument<Boolean>("ru") ?: true
+                        Speaker.speak(this, text, ru)
+                        result.success(null)
+                    }
+
+                    "speakStop" -> {
+                        Speaker.stop()
+                        result.success(null)
+                    }
+
+                    "speakState" -> result.success(Speaker.state)
+
+                    "widgetSupported" -> result.success(
+                        Build.VERSION.SDK_INT >= 26 &&
+                            android.appwidget.AppWidgetManager.getInstance(this)
+                                .isRequestPinAppWidgetSupported
+                    )
+
+                    "pinWidget" -> {
+                        var ok = false
+                        if (Build.VERSION.SDK_INT >= 26) {
+                            val mgr = android.appwidget.AppWidgetManager.getInstance(this)
+                            if (mgr.isRequestPinAppWidgetSupported) {
+                                ok = mgr.requestPinAppWidget(
+                                    android.content.ComponentName(this, QuoteWidget::class.java),
+                                    null, null
+                                )
+                            }
+                        }
+                        result.success(ok)
                     }
 
                     "createDocument" -> {

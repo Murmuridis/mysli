@@ -40,6 +40,25 @@ class Native {
   static Future<bool> notificationsEnabled() async =>
       (await _call<bool>('notificationsEnabled')) ?? false;
 
+  // ---------- Озвучка ----------
+
+  static Future<void> speak(String text, {required bool russian}) =>
+      _call<void>('speak', {'text': text, 'ru': russian});
+  static Future<void> speakStop() => _call<void>('speakStop');
+
+  /// stopped | speaking | no_voice
+  static Future<String> speakState() async =>
+      (await _call<String>('speakState')) ?? 'stopped';
+
+  // ---------- Виджет ----------
+
+  /// Можно ли добавить виджет на рабочий стол прямо из приложения.
+  static Future<bool> widgetSupported() async =>
+      (await _call<bool>('widgetSupported')) ?? false;
+
+  static Future<bool> pinWidget() async =>
+      (await _call<bool>('pinWidget')) ?? false;
+
   // ---------- Файлы ----------
 
   /// Спросить, куда сохранить файл. Возвращает адрес (content://…) или null.
@@ -71,21 +90,43 @@ class Native {
 
 }
 
-/// Ежедневное напоминание.
+/// Напоминания и виджет.
 ///
 /// Android сам будит приложение в выбранное время и показывает уведомление.
-/// Чтобы в уведомлении была именно сегодняшняя цитата, сюда заранее
-/// передаются цитаты на ближайшие 60 дней; при каждом открытии
+/// Чтобы в уведомлении и в виджете была именно сегодняшняя цитата, туда
+/// заранее передаются цитаты на ближайшие 60 дней (на каждый день — мысль
+/// дня и ещё две для второго и третьего напоминания); при каждом открытии
 /// приложения список обновляется.
 class Reminder {
   static const daysAhead = 60;
+  static const maxTimes = 3;
   static Timer? _debounce;
 
   static bool get enabled => Store.instance.setting('reminder_on', '0') == '1';
-  static int get hour =>
-      int.tryParse(Store.instance.setting('reminder_hour', '8')) ?? 8;
-  static int get minute =>
-      int.tryParse(Store.instance.setting('reminder_minute', '0')) ?? 0;
+
+  /// Время напоминаний в минутах от полуночи, по возрастанию.
+  static List<int> get times {
+    final raw = Store.instance.setting('reminder_times', '480');
+    final list = raw
+        .split(',')
+        .map((x) => int.tryParse(x.trim()))
+        .whereType<int>()
+        .where((m) => m >= 0 && m < 24 * 60)
+        .toSet()
+        .toList()
+      ..sort();
+    return list.isEmpty ? [480] : list.take(maxTimes).toList();
+  }
+
+  static Future<void> setTimes(List<int> t) async {
+    final list = t.toSet().toList()..sort();
+    await Store.instance
+        .setSetting('reminder_times', list.take(maxTimes).join(','));
+    await sync();
+  }
+
+  static String fmt(int m) =>
+      '${(m ~/ 60).toString().padLeft(2, '0')}:${(m % 60).toString().padLeft(2, '0')}';
 
   /// Пересчитать расписание через пару секунд (после серии изменений).
   static void syncSoon() {
@@ -102,24 +143,29 @@ class Reminder {
   }
 
   static Future<void> _sync() async {
+    final ordered = Daily.order(await Store.instance.dailyPool());
+    final today = DateTime.now();
+    final map = <String, List<Map<String, String>>>{};
+    final n = ordered.length;
+    for (var i = 0; i < daysAhead && n > 0; i++) {
+      final d = DateTime(today.year, today.month, today.day + i);
+      final day = Daily.dayNumber(d);
+      map[_key(d)] = [
+        for (var slot = 0; slot < maxTimes; slot++)
+          () {
+            // Дополнительные цитаты берутся из другой части перемешанного
+            // списка, чтобы не совпадать с мыслью ближайших дней.
+            final q = ordered[(day + slot * (n ~/ maxTimes + 7)) % n];
+            return {'t': q.text, 'a': q.author};
+          }(),
+      ];
+    }
+    await Native._call<void>('saveQuotes', jsonEncode(map));
     if (!enabled) {
       await Native._call<void>('cancelReminder');
       return;
     }
-    final ordered = Daily.order(await Store.instance.dailyPool());
-    final today = DateTime.now();
-    final map = <String, Map<String, String>>{};
-    for (var i = 0; i < daysAhead; i++) {
-      final d = DateTime(today.year, today.month, today.day + i);
-      final q = Daily.forDay(ordered, d);
-      if (q == null) break;
-      map[_key(d)] = {'t': q.text, 'a': q.author};
-    }
-    await Native._call<void>('scheduleReminder', {
-      'hour': hour,
-      'minute': minute,
-      'quotes': jsonEncode(map),
-    });
+    await Native._call<void>('scheduleReminder', times);
   }
 
   static String _key(DateTime d) =>
