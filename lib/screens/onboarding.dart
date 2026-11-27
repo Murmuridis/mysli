@@ -38,10 +38,13 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     final scheme = Theme.of(context).colorScheme;
     Widget option(String value, String title, String sub) => Card(
           margin: const EdgeInsets.only(bottom: 8),
-          child: RadioListTile<String>(
-            value: value,
-            groupValue: _lang,
-            onChanged: (v) => setState(() => _lang = v!),
+          child: ListTile(
+            leading: Icon(
+                _lang == value
+                    ? Icons.radio_button_checked
+                    : Icons.radio_button_unchecked,
+                color: _lang == value ? scheme.primary : null),
+            onTap: () => setState(() => _lang = value),
             title: Text(title),
             subtitle: Text(sub),
           ),
