@@ -22,11 +22,13 @@ import urllib.request
 
 API = "https://ru.wikisource.org/w/api.php"
 WS = "https://ru.wikisource.org/wiki/"
+API_EN = "https://en.wikisource.org/w/api.php"
+WS_EN = "https://en.wikisource.org/wiki/"
 UA = "MudryeMysliBot/1.0 (https://github.com/Murmuridis/mysli; quotes for a personal app)"
 
 
-def ws_url(title):
-    return WS + urllib.parse.quote(title.replace(" ", "_"), safe="/(),_")
+def ws_url(title, en=False):
+    return (WS_EN if en else WS) + urllib.parse.quote(title.replace(" ", "_"), safe="/(),_")
 
 
 # ---------------------------------------------------------------- источники
@@ -74,6 +76,48 @@ SOURCES = [
          mode="numbered", maxlen=420, u=ws_url("Мысли и афоризмы I (Прутков)")),
 ]
 
+# Английские книги в общественном достоянии (en.wikisource.org).
+# Тексты там часто собраны из сканов, поэтому берётся уже готовая HTML-страница.
+MA = "The Thoughts of the Emperor Marcus Aurelius Antoninus/"
+CONF = "The Sayings of Confucius; a New Translation of the Greater Part of the Confucian Analects/"
+EN_SOURCES = [
+    dict(k="en_marcus", n="Marcus Aurelius. Meditations", author="Marcus Aurelius",
+         d="Translated by George Long, 1862. Books II–XII.",
+         titles="prefix:" + MA + "Book ", exclude=r"/Book I$", mode="paras", maxlen=420,
+         u=ws_url(MA.rstrip("/"), True)),
+    dict(k="en_rochefoucauld", n="La Rochefoucauld. Moral Reflections, Sentences and Maxims",
+         author="François de La Rochefoucauld", d="Newly translated from the French, 1851",
+         titles=["Moral Reflections, Sentences and Maxims"], mode="numbered", maxlen=480,
+         stop_line=r"STANISLAUS|^NOTES\b|^INDEX\b"),
+    dict(k="en_franklin", n="Benjamin Franklin. Poor Richard's Almanack",
+         author="Benjamin Franklin", d="Selections from the apothegms and proverbs (1733–1758)",
+         titles=["Poor Richard's Almanack"], mode="paras", maxlen=360,
+         start_line=r"^1\.\s"),
+    dict(k="en_twain", n="Mark Twain. Pudd'nhead Wilson's Calendar",
+         author="Mark Twain",
+         d="Epigraphs from «Pudd'nhead Wilson» (1894) and «Following the Equator» (1897)",
+         titles="prefix:Pudd'nhead Wilson/Chapter |prefix:Following the Equator/Chapter ",
+         mode="paras", maxlen=420,
+         must=r"[—–-]\s*Pudd.nhead Wilson.s (New )?Calendar\.?$",
+         strip=r"\s*[—–-]\s*Pudd.nhead Wilson.s (New )?Calendar\.?$",
+         u=ws_url("Pudd'nhead Wilson", True)),
+    dict(k="en_wilde", n="Oscar Wilde. Phrases and Philosophies for the Use of the Young",
+         author="Oscar Wilde", d="The Chameleon, 1894",
+         titles=["Phrases and Philosophies for the Use of the Young"], mode="paras", maxlen=360),
+    dict(k="en_gibran", n="Kahlil Gibran. Sand and Foam", author="Kahlil Gibran",
+         d="A Book of Aphorisms, 1926",
+         titles=["Sand and Foam"], mode="paras", maxlen=420),
+    dict(k="en_confucius", n="The Sayings of Confucius", author="Confucius",
+         d="Translated by Lionel Giles, 1907",
+         titles="prefix:" + CONF, exclude=r"/(Introduction|List of the Principal Disciples)$",
+         mode="paras", maxlen=420, u=ws_url(CONF.rstrip("/"), True)),
+    dict(k="en_dhammapada", n="The Dhammapada", author="The Dhammapada",
+         d="Translated by F. Max Müller, 1881",
+         titles=["Dhammapada (Muller)"], mode="paras", maxlen=380),
+]
+for _s in EN_SOURCES:
+    _s["en"] = True
+
 # Книги и сайты без выгрузки цитат: ссылки для чтения и ручного пополнения.
 LINKS = [
     dict(k="l_tolstoy_mysli", n="Л. Н. Толстой. Мысли мудрых людей на каждый день",
@@ -104,6 +148,18 @@ LINKS = [
     dict(k="l_azlib", n="Lib.ru: Классика",
          u="http://az.lib.ru/",
          d="Большая библиотека русской классики и старых переводов"),
+    dict(k="l_en_wikiquote", n="Wikiquote (English)",
+         u="https://en.wikiquote.org/",
+         d="Free compendium of sourced quotations"),
+    dict(k="l_en_seneca", n="Seneca. Moral letters to Lucilius",
+         u=ws_url("Moral letters to Lucilius", True),
+         d="Translated by Richard M. Gummere, 1917—1925"),
+    dict(k="l_en_emerson", n="Ralph Waldo Emerson. Essays: First Series",
+         u=ws_url("Essays: First Series", True),
+         d="Self-Reliance, Compensation, Friendship and other essays, 1841"),
+    dict(k="l_en_tao", n="Lao Tzu. Tâo Teh King",
+         u=ws_url("Tâo Teh King", True),
+         d="Translated by James Legge, 1891"),
     dict(k="l_gutenberg", n="Project Gutenberg",
          u="https://www.gutenberg.org/",
          d="Книги в общественном достоянии, в основном на английском"),
@@ -111,9 +167,9 @@ LINKS = [
 
 
 # ---------------------------------------------------------------- загрузка
-def api(params, tries=4):
+def api(params, tries=4, en=False):
     params = dict(params, format="json", formatversion="2")
-    url = API + "?" + urllib.parse.urlencode(params)
+    url = (API_EN if en else API) + "?" + urllib.parse.urlencode(params)
     for i in range(tries):
         try:
             req = urllib.request.Request(url, headers={"User-Agent": UA})
@@ -126,14 +182,24 @@ def api(params, tries=4):
             time.sleep(3 * (i + 1))
 
 
-def prefix_titles(prefix):
+def prefix_titles(prefix, en=False):
     out, cont = [], {}
     while True:
-        j = api(dict(action="query", list="allpages", aplimit="500", apprefix=prefix, **cont))
+        j = api(dict(action="query", list="allpages", aplimit="500", apprefix=prefix, **cont),
+                en=en)
         out += [p["title"] for p in j["query"]["allpages"]]
         if "continue" not in j:
             return out
         cont = {"apcontinue": j["continue"]["apcontinue"]}
+
+
+def page_html(title):
+    """Готовая HTML-страница (для английской Викитеки)."""
+    j = api(dict(action="parse", prop="text", disableeditsection="1", page=title), en=True)
+    if "parse" not in j:
+        print(f"  нет страницы: {title}", file=sys.stderr)
+        return ""
+    return j["parse"]["text"]
 
 
 def wikitext(title):
@@ -229,6 +295,78 @@ def clean(s):
     return s
 
 
+from html.parser import HTMLParser
+
+
+class _Html2Lines(HTMLParser):
+    """HTML страницы → строки в том же виде, что и после clean():
+    абзацы через пустую строку, заголовки как «== … ==»."""
+    SKIP_CLASSES = ("ws-noexport", "wst-header", "ambox", "mw-references-wrap",
+                    "reference", "pagenum", "ws-pagenum", "mw-cite-backlink",
+                    "wst-verse", "noprint", "mw-heading-number", "toc")
+    SKIP_TAGS = {"style", "script", "sup", "figure", "figcaption", "table"}
+    BLOCK = {"p", "div", "li", "dd", "dt", "blockquote", "tr", "ul", "ol", "dl", "center"}
+    VOID = {"br", "img", "link", "meta", "hr", "input", "wbr", "source", "col"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.out = []
+        self.stack = []      # (tag, skipping)
+        self.skip = 0
+        self.head = None
+
+    def handle_starttag(self, tag, attrs):
+        if tag in self.VOID:
+            if tag == "br" and not self.skip:
+                self.out.append("\n")
+            return
+        a = dict(attrs)
+        cls = a.get("class") or ""
+        skip = (tag in self.SKIP_TAGS or any(c in cls for c in self.SKIP_CLASSES)
+                or a.get("id") in ("headerContainer", "toc"))
+        self.stack.append((tag, skip))
+        if skip:
+            self.skip += 1
+            return
+        if self.skip:
+            return
+        if tag in self.BLOCK:
+            self.out.append("\n\n")
+        if re.fullmatch(r"h[1-6]", tag):
+            self.out.append("\n\n== ")
+            self.head = tag
+
+    def handle_endtag(self, tag):
+        if tag in self.VOID:
+            return
+        # закрыть до совпадающего тега (HTML бывает неаккуратным)
+        while self.stack:
+            t, skip = self.stack.pop()
+            if skip:
+                self.skip -= 1
+            elif not self.skip:
+                if re.fullmatch(r"h[1-6]", t):
+                    self.out.append(" ==\n\n")
+                elif t in self.BLOCK:
+                    self.out.append("\n\n")
+            if t == tag:
+                break
+
+    def handle_data(self, data):
+        if not self.skip:
+            self.out.append(data.replace("\n", " "))
+
+
+def html_lines(html):
+    p = _Html2Lines()
+    p.feed(html)
+    text = "".join(p.out).replace("\u00a0", " ")
+    lines = []
+    for ln in text.split("\n"):
+        lines.append(ln.strip())
+    return lines
+
+
 HEADING = re.compile(r"^(=+)\s*(.*?)\s*\1\s*$")
 NUMBER = re.compile(r"^[\(\[]?([IVXLC]+|\d+)[\.\)\]]?$")
 NOTES = re.compile(r"^(Примечани|Комментари|Сноски|Notes)", re.I)
@@ -250,12 +388,13 @@ def tidy_author(a):
     return a
 
 
-def parse(text, mode, stop=None):
+def parse(text, mode, stop=None, lines=None, start_line=None, stop_line=None):
     """Возвращает список (текст, автор)."""
-    lines = clean(strip_header(text)).split("\n")
+    if lines is None:
+        lines = clean(strip_header(text)).split("\n")
     entries = []          # (текст, автор)
     cur, cur_author = [], ""
-    started = mode != "numbered"
+    started = mode != "numbered" and not start_line
     stopped = False
 
     def flush():
@@ -284,6 +423,17 @@ def parse(text, mode, stop=None):
         if not line:
             end_para()
             continue
+        if stop_line and started and re.search(stop_line, line):
+            end_para()
+            flush()
+            break
+        if start_line and not started:
+            if re.search(start_line, line):
+                started = True
+            else:
+                continue
+        # «104, 105. Текст», «283. Текст», «287.* Текст» — номер в начале абзаца
+        line = re.sub(r"^\d+(?:\s*[,–-]\s*\d+)*\.\*?\s+(?=\S)", "", line)
         h = HEADING.match(line)
         if h:
             title = h.group(2).strip()
@@ -335,18 +485,27 @@ def polish(t):
     return t.strip()
 
 
-def good(t, maxlen, minlen=12):
+def good(t, maxlen, minlen=12, en=False):
     if not (minlen <= len(t) <= maxlen):
         return False
     if any(x in t for x in ("{{", "}}", "[[", "]]", "|", "http", "<", ">", "\x01", "\x02")):
         return False
-    if not re.search(r"[а-яё]", t, re.I):
+    if not re.search(r"[a-z]" if en else r"[а-яё]", t, re.I):
         return False
-    if not re.search(r"[.!?…»\"]$", t):  # мысль должна быть законченной
+    if not re.search(r"[.!?…»\"”’)]$", t):  # мысль должна быть законченной
         return False
     if re.match(r"^[a-zа-яё]", t):  # начало оборвано (продолжение предыдущего)
         return False
-    if re.search(r"[A-Za-z]{2,}|[A-Za-z]'", t):  # остатки иностранных пометок
+    if en:
+        if re.search(r"[а-яё]", t, re.I):
+            return False
+        letters = re.sub(r"[^A-Za-z]", "", t)
+        if letters and sum(c.isupper() for c in letters) > len(letters) * 0.5:
+            return False  # ЗАГОЛОВКИ ПРОПИСНЫМИ
+        if re.search(r"\b(chapter|page|p\.|vol\.|ibid|translator|edition)\b", t, re.I) \
+                and len(t) < 80:
+            return False
+    elif re.search(r"[A-Za-z]{2,}|[A-Za-z]'", t):  # остатки иностранных пометок
         return False
     if re.match(r"^\d+\s", t):  # обрывок с номером страницы или сноски
         return False
@@ -362,10 +521,12 @@ def norm(t):
 def collect():
     sources, quotes, seen = [], [], set()
     stats = []
-    for src in SOURCES:
+    for src in SOURCES + EN_SOURCES:
+        en = src.get("en", False)
         titles = src["titles"]
         if isinstance(titles, str) and titles.startswith("prefix:"):
-            titles = prefix_titles(titles[len("prefix:"):])
+            titles = [t for part in titles.split("|")
+                      for t in prefix_titles(part[len("prefix:"):], en=en)]
             if src.get("depth"):
                 titles = [t for t in titles if t.count("/") + 1 == src["depth"]]
             if src.get("exclude"):
@@ -375,9 +536,19 @@ def collect():
         dropped = 0
         for t in titles:
             print(f"· {t}", file=sys.stderr)
-            for text, author in parse(wikitext(t), src["mode"], src.get("stop")):
+            if en:
+                items = parse("", src["mode"], src.get("stop"), lines=html_lines(page_html(t)),
+                              start_line=src.get("start_line"), stop_line=src.get("stop_line"))
+            else:
+                items = parse(wikitext(t), src["mode"], src.get("stop"),
+                              start_line=src.get("start_line"), stop_line=src.get("stop_line"))
+            for text, author in items:
+                if src.get("must"):
+                    if not re.search(src["must"], text):
+                        continue
+                    text = re.sub(src["strip"], "", text).strip()
                 text = polish(text)
-                if not good(text, src["maxlen"]):
+                if not good(text, src["maxlen"], en=en):
                     dropped += 1
                     continue
                 key = norm(text)
@@ -389,7 +560,7 @@ def collect():
         got = len(quotes) - n_before
         stats.append((src["n"], got, dropped))
         sources.append({"k": src["k"], "n": src["n"],
-                        "u": src.get("u") or ws_url(src["titles"][0]),
+                        "u": src.get("u") or ws_url(src["titles"][0], en),
                         "d": src["d"]})
     for l in LINKS:
         sources.append({"k": l["k"], "n": l["n"], "u": l["u"], "d": l["d"]})
@@ -408,7 +579,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="assets/data/quotes.json")
     ap.add_argument("--if-missing", action="store_true")
-    ap.add_argument("--min", type=int, default=500,
+    ap.add_argument("--min", type=int, default=2000,
                     help="ошибка, если цитат меньше (значит, Викитека не ответила)")
     a = ap.parse_args()
     if a.if_missing and os.path.exists(a.out):
