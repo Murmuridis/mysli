@@ -1,0 +1,31 @@
+name: Обновить цитаты
+
+# Скачивает книги с Викитеки, разбирает их на отдельные мысли
+# и сохраняет assets/data/quotes.json в репозиторий.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [ci/fetch_quotes.py, .github/workflows/quotes.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  quotes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Собрать цитаты
+        run: python3 ci/fetch_quotes.py
+
+      - name: Сохранить в репозиторий
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add assets/data/quotes.json
+          if git diff --cached --quiet; then echo "Без изменений"; exit 0; fi
+          git commit -m "Подборка цитат с Викитеки"
+          git pull --rebase origin main
+          git push origin HEAD:main
